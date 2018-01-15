@@ -142,6 +142,43 @@ func FindKeyPairOnSession(session pkcs11.SessionHandle, slot uint, id []byte, la
 	}
 }
 
+func DeleteKeyPairOnSlot(slot uint, id []byte, label []byte) error {
+	return withSession(slot, func(session pkcs11.SessionHandle) error {
+		var privHandle, pubHandle pkcs11.ObjectHandle
+		var err error
+
+		// finding private key
+		if privHandle, err = findKey(session, id, label, pkcs11.CKO_PRIVATE_KEY, ^uint(0)); err != nil {
+			return err
+		}
+
+		// finding public key
+		attributes := []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, 0),
+		}
+		if attributes, err = libHandle.GetAttributeValue(session, privHandle, attributes); err != nil {
+			return err
+		}
+		keyType := bytesToUlong(attributes[0].Value)
+		if pubHandle, err = findKey(session, id, label, pkcs11.CKO_PUBLIC_KEY, keyType); err != nil {
+			return err
+		}
+
+		// deleting keys
+		err = libHandle.DestroyObject(session, pubHandle)
+		if err != nil {
+			return err
+		}
+
+		err = libHandle.DestroyObject(session, privHandle)
+		if err != nil {
+			return err
+		}
+
+		return err
+	})
+}
+
 // Public returns the public half of a private key.
 //
 // This partially implements the go.crypto.Signer and go.crypto.Decrypter interfaces for
