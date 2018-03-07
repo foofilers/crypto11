@@ -157,11 +157,30 @@ type PKCS11Config struct {
 
 	// User PIN (password)
 	Pin string
+
+	// Max token session
+	MaxTokenSession int
 }
 
-
-func initLibrary(config *PKCS11Config) (*pkcs11.Ctx, error) {
+// Configure configures PKCS#11 from a PKCS11Config.
+//
+// The PKCS#11 library context is returned,
+// allowing a PKCS#11-aware application to make use of it. Non-aware
+// appliations may ignore it.
+//
+// Unsually, these values may be present even if the error is
+// non-nil. This corresponds to the case that the library has already
+// been configured. Note that it is NOT reconfigured so if you supply
+// a different configuration the second time, it will be ignored in
+// favor of the first configuration.
+//
+// If config is nil, and the library has already been configured, the
+// context from the first configuration is returned (and
+// the error will be nil in this case).
+func Configure(config *PKCS11Config) (*pkcs11.Ctx, error) {
 	var err error
+	var slots []uint
+	var flags uint
 
 	if config == nil {
 		if libHandle != nil {
@@ -170,7 +189,6 @@ func initLibrary(config *PKCS11Config) (*pkcs11.Ctx, error) {
 		return nil, ErrNotConfigured
 	}
 	if libHandle != nil {
-		log.Printf("PKCS#11 library already configured")
 		return libHandle, nil
 	}
 	libHandle = pkcs11.New(config.Path)
@@ -182,61 +200,30 @@ func initLibrary(config *PKCS11Config) (*pkcs11.Ctx, error) {
 		log.Printf("Failed to initialize PKCS#11 library: %s", err.Error())
 		return nil, err
 	}
-	return libHandle, err
-}
-
-
-// Configure configures PKCS#11 from a PKCS11Config.
-//
-// The PKCS#11 library context is returned,
-// allowing a PKCS#11-aware application to make use of it. Non-aware
-// appliations may ignore it.
-
-// If config is nil, and the library has already been configured, the
-// context from the first configuration is returned (and
-// the error will be nil in this case).
-func Configure(config *PKCS11Config) (*pkcs11.Ctx, error) {
-	var slots []uint
-	var flags uint
-	var err error
-	var currSlot uint
-
-	if libHandle == nil {
-		if _, err = initLibrary(config); err != nil {
-			return nil, err
-		}
-	}
-
 	if slots, err = libHandle.GetSlotList(true); err != nil {
 		log.Printf("Failed to list PKCS#11 Slots: %s", err.Error())
 		return nil, err
 	}
-
-	if currSlot, flags, err = findToken(slots, config.TokenSerial, config.TokenLabel); err != nil {
+	if defaultSlot, flags, err = findToken(slots, config.TokenSerial, config.TokenLabel); err != nil {
 		log.Printf("Failed to find Token in any Slot: %s", err.Error())
 		return nil, err
 	}
-
-	_, slotAlreadyConfigured := sessionPools[currSlot]
-	if err = setupSessions(currSlot, 0); err != nil {
+	if err = setupSessions(defaultSlot, config.MaxTokenSession); err != nil {
 		return nil, err
 	}
-
-	if !slotAlreadyConfigured {
-		if err = withSession(currSlot, func(session pkcs11.SessionHandle) error {
-			if flags&pkcs11.CKF_LOGIN_REQUIRED != 0 {
-				err = libHandle.Login(session, pkcs11.CKU_USER, config.Pin)
-				if err != nil {
-					log.Printf("Failed to login into PKCS#11 Token: %s", err.Error())
-				}
-			} else {
-				err = nil
+	if err = withSession(defaultSlot, func(session pkcs11.SessionHandle) error {
+		if flags&pkcs11.CKF_LOGIN_REQUIRED != 0 {
+			err = libHandle.Login(session, pkcs11.CKU_USER, config.Pin)
+			if err != nil {
+				log.Printf("Failed to login into PKCS#11 Token: %s", err.Error())
 			}
-			return err
-		}); err != nil {
-			log.Printf("Failed to open PKCS#11 Session: %s", err.Error())
-			return nil, err
+		} else {
+			err = nil
 		}
+		return err
+	}); err != nil {
+		log.Printf("Failed to open PKCS#11 Session: %s", err.Error())
+		return nil, err
 	}
 	return libHandle, nil
 }
